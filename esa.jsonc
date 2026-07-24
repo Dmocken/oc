@@ -1,13 +1,7 @@
 {
   // 阿里云 ESA Pages 部署配置
+  "entry": "./edge-function/api-proxy.js",
   "assets": {
     "directory": "dist"
-  },
-  "routes": [
-    {
-      // 把 /api/* 请求代理到 givemeoc.com
-      "source": "/api/(.*)",
-      "target": "https://www.givemeoc.com/wp-json/givemeoc/v1/$1"
-    }
-  ]
+  }
 }
