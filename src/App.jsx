@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { fetchCompanies } from './api';
+import { getAllLocalStatuses } from './utils/localStatus';
 import FilterPanel from './components/FilterPanel';
 import DataTable from './components/DataTable';
 import DetailModal from './components/DetailModal';
@@ -42,11 +43,36 @@ export default function App() {
     setLoading(true);
     setError(null);
     try {
-      const result = await fetchCompanies(currentFilters);
+      // 招聘类型和投递状态不传 API，前端做子串/本地匹配
+      const result = await fetchCompanies({
+        ...currentFilters,
+        recruitment_type: '',
+        progress_status: '',
+      });
       if (currentRequest !== requestId.current) return;
-      // 接口在部分情况下会返回未完全应用筛选条件的记录，前端再做一次精确匹配，
-      // 避免选择 2026 届时混入仅属于 2027 届的记录。
-      const rows = (result.data || []).filter((item) => matchesTargetCandidates(item.target_candidates, currentFilters.target_candidates));
+
+      const localStatuses = getAllLocalStatuses();
+
+      // 前端二次过滤：
+      // 1. target_candidates 精确匹配
+      // 2. recruitment_type 子串匹配（"提前批" 匹配 "秋招提前批"）
+      // 3. progress_status 使用本地保存/覆盖的状态
+      const rows = (result.data || []).filter((item) => {
+        if (!matchesTargetCandidates(item.target_candidates, currentFilters.target_candidates)) return false;
+
+        if (currentFilters.recruitment_type) {
+          const rt = item.recruitment_type || '';
+          if (!rt.includes(currentFilters.recruitment_type)) return false;
+        }
+
+        if (currentFilters.progress_status) {
+          const localStatus = localStatuses[item.id] ?? item.progress_status ?? '';
+          if (localStatus !== currentFilters.progress_status) return false;
+        }
+
+        return true;
+      });
+
       setData(rows);
       setPagination(result.pagination || null);
       lastValidPage.current = Math.max(lastValidPage.current, Number(currentFilters.page) || 1);

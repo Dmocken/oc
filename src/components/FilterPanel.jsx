@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import './FilterPanel.css';
 
 const COMPANY_TYPES = ['', '民企', '国企', '外企', '合资', '事业单位', '政府机关'];
@@ -37,17 +38,116 @@ export default function FilterPanel({ filters, onFilterChange, onSearch, loading
       </div>
 
       <div className="filter-row">
-        <FilterSelect label="公司类型" value={filters.company_type} onChange={(v) => handleChange('company_type', v)} options={COMPANY_TYPES} empty="全部类型" />
-        <FilterSelect label="招聘类型" value={filters.recruitment_type} onChange={(v) => handleChange('recruitment_type', v)} options={RECRUITMENT_TYPES} empty="全部招聘类型" />
-        <FilterSelect label="投递状态" value={filters.progress_status} onChange={(v) => handleChange('progress_status', v)} options={PROGRESS_STATUSES} empty="全部状态" />
-        <FilterSelect label="目标人群" value={filters.target_candidates} onChange={(v) => handleChange('target_candidates', v)} options={TARGET_CANDIDATES} empty="全部人群" />
-        <FilterSelect label="排序方式" value={`${filters.order_by || 'update_time'}:${filters.order || 'desc'}`} onChange={(v) => { const [order_by, order] = v.split(':'); onFilterChange({ ...filters, order_by, order, page: 1 }); }} options={['update_time:desc', 'update_time:asc', 'deadline:asc', 'name:asc']} optionLabels={['最近更新', '最早更新', '截止日期优先', '公司名称 A-Z']} />
-        <FilterSelect label="每页数量" value={filters.per_page || 20} onChange={(v) => handleChange('per_page', Number(v))} options={PER_PAGE_OPTIONS.map(String)} optionLabels={PER_PAGE_OPTIONS.map((n) => `${n} 条`)} />
+        <FilterSelect label="公司类型" value={filters.company_type || ''} onChange={(v) => handleChange('company_type', v)} options={COMPANY_TYPES} empty="全部类型" />
+        <FilterSelect label="招聘类型" value={filters.recruitment_type || ''} onChange={(v) => handleChange('recruitment_type', v)} options={RECRUITMENT_TYPES} empty="全部招聘类型" />
+        <FilterSelect label="投递状态" value={filters.progress_status || ''} onChange={(v) => handleChange('progress_status', v)} options={PROGRESS_STATUSES} empty="全部状态" />
+        <FilterSelect label="目标人群" value={filters.target_candidates || ''} onChange={(v) => handleChange('target_candidates', v)} options={TARGET_CANDIDATES} empty="全部人群" />
+        <FilterSelect
+          label="排序方式"
+          value={`${filters.order_by || 'update_time'}:${filters.order || 'desc'}`}
+          onChange={(v) => { const [order_by, order] = v.split(':'); onFilterChange({ ...filters, order_by, order, page: 1 }); }}
+          options={['update_time:desc', 'update_time:asc', 'deadline:asc', 'name:asc']}
+          optionLabels={['最近更新', '最早更新', '截止日期优先', '公司名称 A-Z']}
+        />
+        <FilterSelect
+          label="每页数量"
+          value={String(filters.per_page || 20)}
+          onChange={(v) => handleChange('per_page', Number(v))}
+          options={PER_PAGE_OPTIONS.map(String)}
+          optionLabels={PER_PAGE_OPTIONS.map((n) => `${n} 条`)}
+        />
       </div>
     </section>
   );
 }
 
 function FilterSelect({ label, value = '', onChange, options, empty, optionLabels }) {
-  return <label className="filter-item"><span>{label}</span><select value={value || ''} onChange={(e) => onChange(e.target.value)}>{options.map((option, index) => <option key={option} value={option}>{optionLabels?.[index] || option || empty}</option>)}</select></label>;
+  const [open, setOpen] = useState(false);
+  const [pos, setPos] = useState({ top: 0, left: 0, width: 0 });
+  const triggerRef = useRef(null);
+  const dropdownRef = useRef(null);
+
+  const close = useCallback(() => setOpen(false), []);
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e) => {
+      if (
+        dropdownRef.current && !dropdownRef.current.contains(e.target) &&
+        triggerRef.current && !triggerRef.current.contains(e.target)
+      ) {
+        close();
+      }
+    };
+    const scrollHandler = (e) => {
+      if (dropdownRef.current && dropdownRef.current.contains(e.target)) return;
+      close();
+    };
+    document.addEventListener('mousedown', handler);
+    window.addEventListener('scroll', scrollHandler, true);
+    return () => {
+      document.removeEventListener('mousedown', handler);
+      window.removeEventListener('scroll', scrollHandler, true);
+    };
+  }, [open, close]);
+
+  const handleToggle = () => {
+    if (!open && triggerRef.current) {
+      const rect = triggerRef.current.getBoundingClientRect();
+      setPos({ top: rect.bottom + 4, left: rect.left, width: rect.width });
+    }
+    setOpen((v) => !v);
+  };
+
+  const handleSelect = (option) => {
+    onChange(option);
+    close();
+  };
+
+  const selectedLabel = optionLabels
+    ? optionLabels[options.indexOf(value)] || empty
+    : (options.find((o) => o === value) || empty || value);
+
+  return (
+    <div className="filter-item">
+      <span>{label}</span>
+      <button
+        ref={triggerRef}
+        type="button"
+        className={`filter-trigger ${open ? 'open' : ''} ${value ? 'has-value' : ''}`}
+        onClick={handleToggle}
+      >
+        <span className="filter-trigger-text">{selectedLabel}</span>
+        <span className="filter-trigger-arrow" aria-hidden="true" />
+      </button>
+      {open &&
+        createPortal(
+          <div className="filter-dropdown-overlay" onClick={close}>
+            <div
+              ref={dropdownRef}
+              className="filter-dropdown"
+              style={{ top: pos.top, left: pos.left, minWidth: pos.width }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              {options.map((option, index) => {
+                const label = optionLabels?.[index] || option || empty;
+                const isSelected = option === value;
+                return (
+                  <button
+                    key={option}
+                    type="button"
+                    className={`filter-dropdown-item ${isSelected ? 'active' : ''}`}
+                    onClick={() => handleSelect(option)}
+                  >
+                    <span className="filter-dropdown-label">{label}</span>
+                    {isSelected && <span className="filter-dropdown-check">✓</span>}
+                  </button>
+                );
+              })}
+            </div>
+          </div>,
+          document.body
+        )}
+    </div>
+  );
 }

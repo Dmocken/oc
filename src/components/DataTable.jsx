@@ -67,7 +67,10 @@ function StatusCell({ companyId, originalStatus, localOverrides, setLocalOverrid
         close();
       }
     };
-    const scrollHandler = () => close();
+    const scrollHandler = (e) => {
+      if (dropdownRef.current && dropdownRef.current.contains(e.target)) return;
+      close();
+    };
     document.addEventListener('mousedown', handler);
     window.addEventListener('scroll', scrollHandler, true);
     return () => {
