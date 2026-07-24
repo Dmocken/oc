@@ -2,27 +2,38 @@ const BASE_URL = import.meta.env.VITE_API_BASE_URL;
 
 /**
  * 获取公司列表（支持筛选、分页、排序）
+ * 多选字段传数组 → 拼接为 key[]=val1&key[]=val2
  */
 export async function fetchCompanies({
   search = '',
-  company_type = '',
-  recruitment_type = '',
-  progress_status = '',
-  target_candidates = '',
+  company_type = [],
+  recruitment_type = [],
+  progress_status = [],
+  target_candidates = [],
   page = 1,
   per_page = 20,
   order_by = 'update_time',
   order = 'desc',
 } = {}) {
-  const params = { page, per_page, order_by, order };
-  if (search) params.search = search;
-  if (company_type) params.company_type = company_type;
-  if (recruitment_type) params.recruitment_type = recruitment_type;
-  if (progress_status) params.progress_status = progress_status;
-  if (target_candidates) params.target_candidates = target_candidates;
+  const usp = new URLSearchParams();
+  usp.set('page', page);
+  usp.set('per_page', per_page);
+  usp.set('order_by', order_by);
+  usp.set('order', order);
+
+  if (search) usp.set('search', search);
+
+  const appendArr = (key, arr) => {
+    if (!Array.isArray(arr) || arr.length === 0) return;
+    arr.forEach((v) => usp.append(`${key}[]`, v));
+  };
+  appendArr('company_type', company_type);
+  appendArr('recruitment_type', recruitment_type);
+  appendArr('progress_status', progress_status);
+  appendArr('target_candidates', target_candidates);
 
   const resp = await fetch(
-    `${BASE_URL}?${new URLSearchParams(params).toString()}`
+    `${BASE_URL}?${usp.toString()}`
   );
   if (!resp.ok) {
     const error = new Error(`请求失败: ${resp.status} ${resp.statusText}`);
@@ -57,13 +68,11 @@ export async function fetchAllCompanies(filters = {}) {
   const per_page = 100;
   const allRows = [];
 
-  // 先请求第一页，获取总页数
   const firstResult = await fetchCompanies({ ...filters, page: 1, per_page });
   allRows.push(...firstResult.data);
 
   const totalPages = firstResult.pagination?.total_pages || 1;
 
-  // 并发请求剩余页（控制并发数避免被限流）
   const CONCURRENCY = 4;
   for (let start = 2; start <= totalPages; start += CONCURRENCY) {
     const batch = [];

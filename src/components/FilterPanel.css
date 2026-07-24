@@ -148,6 +148,23 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  flex: 1;
+}
+
+.filter-trigger-count {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  border-radius: 10px;
+  background: #6366f1;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
 }
 
 .filter-trigger-arrow {
@@ -234,6 +251,32 @@
   color: #6366f1;
   font-weight: 700;
   flex-shrink: 0;
+}
+
+/* Multi-select checkbox */
+.filter-dropdown-checkbox {
+  width: 18px;
+  height: 18px;
+  border: 2px solid #d1d5db;
+  border-radius: 5px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all .15s;
+}
+
+.filter-dropdown-checkbox.checked {
+  border-color: #6366f1;
+  background: #6366f1;
+}
+
+.filter-dropdown-checkmark {
+  width: 10px;
+  height: 6px;
+  border-left: 2px solid #fff;
+  border-bottom: 2px solid #fff;
+  transform: rotate(-45deg) translateY(-1px);
 }
 
 /* Buttons */

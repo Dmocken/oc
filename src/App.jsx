@@ -8,20 +8,19 @@ import './App.css';
 
 const DEFAULT_FILTERS = {
   search: '',
-  company_type: '',
-  recruitment_type: '',
-  progress_status: '',
-  target_candidates: '',
+  company_type: [],
+  recruitment_type: [],
+  progress_status: [],
+  target_candidates: [],
   order_by: 'update_time',
   order: 'desc',
   page: 1,
   per_page: 20,
 };
 
-function matchesTargetCandidates(value, target) {
-  if (!target) return true;
-  const values = Array.isArray(value) ? value : String(value || '').split(/[、,，/|;；\s]+/);
-  return values.some((item) => String(item).trim() === target);
+/** 检查多选数组是否有激活的筛选 */
+function hasFilter(arr) {
+  return Array.isArray(arr) && arr.length > 0;
 }
 
 export default function App() {
@@ -43,31 +42,40 @@ export default function App() {
     setLoading(true);
     setError(null);
     try {
-      // 招聘类型和投递状态不传 API，前端做子串/本地匹配
+      // 多选字段走前端过滤，不传 API（API 不支持数组参数）
       const result = await fetchCompanies({
         ...currentFilters,
+        company_type: '',
         recruitment_type: '',
         progress_status: '',
+        target_candidates: '',
       });
       if (currentRequest !== requestId.current) return;
 
       const localStatuses = getAllLocalStatuses();
 
-      // 前端二次过滤：
-      // 1. target_candidates 精确匹配
-      // 2. recruitment_type 子串匹配（"提前批" 匹配 "秋招提前批"）
-      // 3. progress_status 使用本地保存/覆盖的状态
       const rows = (result.data || []).filter((item) => {
-        if (!matchesTargetCandidates(item.target_candidates, currentFilters.target_candidates)) return false;
-
-        if (currentFilters.recruitment_type) {
-          const rt = item.recruitment_type || '';
-          if (!rt.includes(currentFilters.recruitment_type)) return false;
+        // 公司类型：精确匹配（多选）
+        if (hasFilter(currentFilters.company_type)) {
+          if (!currentFilters.company_type.includes(item.type)) return false;
         }
 
-        if (currentFilters.progress_status) {
+        // 招聘类型：子串匹配（"提前批" 匹配 "秋招提前批"）
+        if (hasFilter(currentFilters.recruitment_type)) {
+          const rt = item.recruitment_type || '';
+          if (!currentFilters.recruitment_type.some((f) => rt.includes(f))) return false;
+        }
+
+        // 投递状态：本地覆盖优先
+        if (hasFilter(currentFilters.progress_status)) {
           const localStatus = localStatuses[item.id] ?? item.progress_status ?? '';
-          if (localStatus !== currentFilters.progress_status) return false;
+          if (!currentFilters.progress_status.includes(localStatus)) return false;
+        }
+
+        // 目标人群：精确匹配（多选）
+        if (hasFilter(currentFilters.target_candidates)) {
+          const tc = item.target_candidates || '';
+          if (!currentFilters.target_candidates.includes(tc)) return false;
         }
 
         return true;
