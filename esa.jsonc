@@ -1,0 +1,6 @@
+{
+  // EdgeOne Pages 部署配置
+  "assets": {
+    "directory": "dist"
+  }
+}
