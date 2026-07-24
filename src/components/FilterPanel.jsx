@@ -2,8 +2,8 @@ import { useEffect, useState, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import './FilterPanel.css';
 
-const COMPANY_TYPES     = ['', '民企', '国企', '外企', '合资', '事业单位', '政府机关'];
-const RECRUITMENT_TYPES = ['', '秋招', '春招', '实习', '社招', '补录', '提前批'];
+const COMPANY_TYPES     = ['', '央国企', '外企', '民企', '事业单位', '银行', '中外合资'];
+const RECRUITMENT_TYPES = ['', '春招', '秋招', '秋招补录', '秋招提前批', '实习', '春招补录'];
 const PROGRESS_STATUSES = ['', '未投递', '已投递', '笔试中', '面试中', '已发offer', '已拒', '已过期'];
 const TARGET_CANDIDATES = ['', '2026届', '2025届', '2024届', '2027届', '不限'];
 const PER_PAGE_OPTIONS   = [20, 50, 100];
