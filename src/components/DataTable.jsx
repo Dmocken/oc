@@ -1,4 +1,5 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { getAllLocalStatuses, setLocalStatus } from '../utils/localStatus';
 import './DataTable.css';
 
@@ -49,23 +50,35 @@ function formatDateTime(dateStr) {
 
 function StatusCell({ companyId, originalStatus, localOverrides, setLocalOverrides }) {
   const [open, setOpen] = useState(false);
-  const ref = useRef(null);
+  const [pos, setPos] = useState({ top: 0, left: 0 });
+  const btnRef = useRef(null);
+  const dropdownRef = useRef(null);
   const currentStatus = localOverrides[companyId] ?? originalStatus;
 
+  const close = useCallback(() => setOpen(false), []);
+
   useEffect(() => {
+    if (!open) return;
     const handler = (e) => {
-      if (ref.current && !ref.current.contains(e.target)) {
-        setOpen(false);
+      if (
+        dropdownRef.current && !dropdownRef.current.contains(e.target) &&
+        btnRef.current && !btnRef.current.contains(e.target)
+      ) {
+        close();
       }
     };
-    if (open) document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, [open]);
+    const scrollHandler = () => close();
+    document.addEventListener('mousedown', handler);
+    window.addEventListener('scroll', scrollHandler, true);
+    return () => {
+      document.removeEventListener('mousedown', handler);
+      window.removeEventListener('scroll', scrollHandler, true);
+    };
+  }, [open, close]);
 
   const handleSelect = (status, e) => {
     e.stopPropagation();
     if (status === originalStatus) {
-      // 恢复为原始值，清除覆盖
       setLocalStatus(companyId, null);
       const next = { ...localOverrides };
       delete next[companyId];
@@ -74,42 +87,58 @@ function StatusCell({ companyId, originalStatus, localOverrides, setLocalOverrid
       setLocalStatus(companyId, status);
       setLocalOverrides({ ...localOverrides, [companyId]: status });
     }
-    setOpen(false);
+    close();
   };
 
   const handleToggle = (e) => {
     e.stopPropagation();
+    if (!open && btnRef.current) {
+      const rect = btnRef.current.getBoundingClientRect();
+      setPos({
+        top: rect.bottom + 4,
+        left: rect.left,
+      });
+    }
     setOpen((v) => !v);
   };
 
   return (
-    <div className="status-cell-wrap" ref={ref} data-label="投递状态">
+    <div className="status-cell-wrap" data-label="投递状态">
       <button
+        ref={btnRef}
         type="button"
         className="status-badge status-badge--clickable"
         style={{ backgroundColor: getStatusColor(currentStatus || '-') }}
         onClick={handleToggle}
-        title="点击切换投递状态"
       >
         {currentStatus || '-'}
-        <span className="status-arrow">▾</span>
+        <span className="status-arrow" />
       </button>
-      {open && (
-        <div className="status-dropdown">
-          {ALL_STATUSES.map((s) => (
-            <button
-              key={s}
-              type="button"
-              className={`status-dropdown-item ${s === currentStatus ? 'active' : ''}`}
-              style={{ borderLeftColor: getStatusColor(s) }}
-              onClick={(e) => handleSelect(s, e)}
+      {open &&
+        createPortal(
+          <div className="status-dropdown-overlay" onClick={close}>
+            <div
+              ref={dropdownRef}
+              className="status-dropdown"
+              style={{ top: pos.top, left: pos.left }}
+              onClick={(e) => e.stopPropagation()}
             >
-              <span className="status-dot" style={{ backgroundColor: getStatusColor(s) }} />
-              {s}
-            </button>
-          ))}
-        </div>
-      )}
+              {ALL_STATUSES.map((s) => (
+                <button
+                  key={s}
+                  type="button"
+                  className={`status-dropdown-item ${s === currentStatus ? 'active' : ''}`}
+                  onClick={(e) => handleSelect(s, e)}
+                >
+                  <span className="status-dot" style={{ backgroundColor: getStatusColor(s) }} />
+                  <span className="status-label">{s}</span>
+                  {s === currentStatus && <span className="status-check">✓</span>}
+                </button>
+              ))}
+            </div>
+          </div>,
+          document.body
+        )}
     </div>
   );
 }
