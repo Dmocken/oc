@@ -1,5 +1,4 @@
-// 走 Vite 代理避免跨域（开发环境），生产构建时替换为完整 URL
-const BASE_URL = '/wp-json/givemeoc/v1/companies';
+const BASE_URL = import.meta.env.VITE_API_BASE_URL;
 
 /**
  * 获取公司列表（支持筛选、分页、排序）
