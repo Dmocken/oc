@@ -156,6 +156,7 @@ async function req(worker, path, opts = {}) {
     cache: resp.headers.get('X-Cache'),
     setCookie: resp.headers.get('Set-Cookie'),
     location: resp.headers.get('Location'),
+    cacheControl: resp.headers.get('Cache-Control'),
     text,
     body,
   };
@@ -348,6 +349,16 @@ async function req(worker, path, opts = {}) {
   check('H10 未登录可加载静态资源', s1.status === 200 && s1.text === 'static-asset', s1.status);
   const s2 = await req(worker, '/assets/index-abc.js', { headers: { Cookie: AUTH_COOKIE } });
   check('H11 已登录可加载静态资源', s2.status === 200 && s2.text === 'static-asset', s2.status);
+
+  // H12 已登录访问页面：必须禁止缓存，否则会话失效后刷新会命中本地缓存而看不到登录页
+  const page = await req(worker, '/', { headers: { Cookie: AUTH_COOKIE } });
+  check('H12 已登录可访问页面', page.status === 200 && page.text === 'static-asset', page.status);
+  check('H12b 页面响应 Cache-Control=no-store', page.cacheControl === 'no-store', page.cacheControl);
+
+  // H13 未登录访问页面时，登录页本身也不被缓存
+  const lp = await req(worker, '/xxx?a=1', { noAuth: true });
+  check('H13 未登录任意路径均返回登录页', lp.status === 200 && lp.text.includes('<form'), lp.status);
+  check('H13b 登录页 no-store', lp.cacheControl === 'no-store', lp.cacheControl);
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

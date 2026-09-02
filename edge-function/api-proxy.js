@@ -705,7 +705,15 @@ export default {
           },
         });
       }
-      return fetch(request); // 已授权：页面与静态资源
+      const pageResp = await fetch(request);
+      // 页面 HTML 一律禁止缓存：否则会话失效后刷新会命中浏览器本地缓存的首页，
+      // 不经过本函数，导致 JS 再次 401 → 无限刷新且看不到登录页。
+      if (!isStaticAsset(p)) {
+        const noStore = new Response(pageResp.body, pageResp);
+        noStore.headers.set('Cache-Control', 'no-store');
+        return noStore;
+      }
+      return pageResp; // 静态资源保留平台自身的缓存策略
     } catch (err) {
       return json({ error: '网关错误', detail: err.message }, 502);
     }

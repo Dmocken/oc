@@ -1,13 +1,21 @@
 const API_PREFIX = '/api';
 
+let authRedirecting = false;
+
 /**
- * 会话失效（边缘函数返回 401）时重载页面，由边缘函数下发登录页。
- * 数据出口在服务端强制鉴权，前端只负责把用户送回登录入口。
+ * 会话失效（边缘函数返回 401）时前往登录页。
+ * 这里必须"导航到 /api/login"而不是 reload 当前页：
+ * 若首页 HTML 被浏览器缓存，reload 会直接使用本地缓存、不再经过边缘函数，
+ * 于是 JS 再次请求接口 → 再次 401 → 无限刷新，且永远看不到登录页。
+ * 而 /api/login 不是静态资源路径，必定由边缘函数处理并返回登录页。
+ * 数据出口始终由服务端强制鉴权，前端只负责把用户送到登录入口。
  */
 function handleUnauthorized() {
-  if (typeof window !== 'undefined' && typeof window.location?.reload === 'function') {
-    window.location.reload();
-  }
+  if (typeof window === 'undefined' || typeof window.location?.replace !== 'function') return;
+  if (authRedirecting) return; // 并发多个 401 时只导航一次
+  authRedirecting = true;
+  const next = encodeURIComponent(window.location.pathname + window.location.search);
+  window.location.replace(`/api/login?next=${next}`);
 }
 
 /**
