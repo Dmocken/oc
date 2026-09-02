@@ -19,6 +19,19 @@
 
 const KV_NAMESPACE = 'oc';
 
+// —— 访问鉴权：验证器 App 的 TOTP 动态口令（RFC 6238，6 位 / 30 秒）——
+// 密钥（Base32）不写在代码里，由函数变量注入：
+//   控制台 → 边缘计算和 AI → 函数和Pages → 目标函数 → 基本信息 → 函数变量
+//   添加变量：键 TOTP_SECRET，值为 Base32 密钥（建议勾选「加密存储」）
+//   注意：新增/修改变量后需重新部署版本才会生效；未配置时站点拒绝一切访问（fail-closed）。
+// 密钥可用 node scripts/setup-totp.mjs 生成，并用验证器 App 扫码或手输录入。
+const AUTH_COOKIE = 'oc_auth';
+const AUTH_MAX_AGE = 30 * 24 * 3600; // 会话有效期 30 天
+const TOTP_PERIOD = 30; // 时间步长（秒），与验证器 App 一致
+const TOTP_DIGITS = 6;
+const TOTP_SKEW = 1; // 容忍 ±1 个时间窗，抵消时钟漂移
+const OTP_REPLAY_GUARD_MS = 90 * 1000; // 同一个动态口令在此窗口内只能成功一次
+
 // 预热/管理接口密钥：部署前请改成自己的随机串（防止他人触发大量抓取）
 const SYNC_KEY = 'oc-sync-2026a9f3c7e2';
 
@@ -419,27 +432,280 @@ async function handlePostings(url) {
   return json(buildOfflineResponse(latest || first.records, url), 200, { 'X-Cache': tag });
 }
 
+// —— 常量时间比较（避免计时侧信道）——
+function safeEqual(a, b) {
+  const x = String(a == null ? '' : a);
+  const y = String(b == null ? '' : b);
+  if (x.length !== y.length) return false;
+  let diff = 0;
+  for (let i = 0; i < x.length; i++) diff |= x.charCodeAt(i) ^ y.charCodeAt(i);
+  return diff === 0;
+}
+
+// —— TOTP（RFC 6238）——
+const B32_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+
+function base32Decode(input) {
+  const s = String(input || '').toUpperCase().replace(/[=\s-]/g, '');
+  let bits = 0;
+  let value = 0;
+  const out = [];
+  for (const ch of s) {
+    const idx = B32_ALPHABET.indexOf(ch);
+    if (idx < 0) return null; // 非法字符 → 视为未配置
+    value = (value << 5) | idx;
+    bits += 5;
+    if (bits >= 8) {
+      out.push((value >>> (bits - 8)) & 0xff);
+      bits -= 8;
+    }
+  }
+  return new Uint8Array(out);
+}
+
+async function hmacSha1(keyBytes, msgBytes) {
+  try {
+    const key = await crypto.subtle.importKey('raw', keyBytes, { name: 'HMAC', hash: 'SHA-1' }, false, ['sign']);
+    return new Uint8Array(await crypto.subtle.sign('HMAC', key, msgBytes));
+  } catch {
+    // 回退：运行时若不支持 Web Crypto 的 HMAC-SHA1，改用 Node 兼容的 crypto 模块
+    const { createHmac } = await import('node:crypto');
+    return new Uint8Array(createHmac('sha1', Buffer.from(keyBytes)).update(Buffer.from(msgBytes)).digest());
+  }
+}
+
+function counterBytes(counter) {
+  const b = new Uint8Array(8);
+  let c = counter;
+  for (let i = 7; i >= 0; i--) {
+    b[i] = c & 0xff;
+    c = Math.floor(c / 256);
+  }
+  return b;
+}
+
+async function hotpAt(secretBytes, counter) {
+  const mac = await hmacSha1(secretBytes, counterBytes(counter));
+  const offset = mac[mac.length - 1] & 0x0f;
+  const bin = ((mac[offset] & 0x7f) << 24) | (mac[offset + 1] << 16) | (mac[offset + 2] << 8) | mac[offset + 3];
+  return String(bin % Math.pow(10, TOTP_DIGITS)).padStart(TOTP_DIGITS, '0');
+}
+
+// 校验输入口令，容忍 ±TOTP_SKEW 个时间窗（atSeconds 便于测试与时钟校正）
+async function verifyTotp(secretBytes, input, atSeconds) {
+  const code = String(input == null ? '' : input).replace(/\D/g, '');
+  if (code.length !== TOTP_DIGITS) return false;
+  const now = atSeconds == null ? Math.floor(Date.now() / 1000) : atSeconds;
+  const base = Math.floor(now / TOTP_PERIOD);
+  for (let d = -TOTP_SKEW; d <= TOTP_SKEW; d++) {
+    if (safeEqual(code, await hotpAt(secretBytes, base + d))) return true;
+  }
+  return false;
+}
+
+// 会话凭据：由密钥派生，泄露密钥才能伪造，且不含明文口令
+async function sessionToken(secretBytes) {
+  const mac = await hmacSha1(secretBytes, new TextEncoder().encode('oc-session-v1'));
+  return Array.from(mac).map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+function getSecretBytes(env) {
+  const raw = env && env.TOTP_SECRET;
+  if (!raw) return null;
+  const bytes = base32Decode(raw);
+  return bytes && bytes.length ? bytes : null;
+}
+
+function cookieValue(request, name) {
+  const raw = request.headers.get('Cookie') || '';
+  for (const part of raw.split(';')) {
+    const i = part.indexOf('=');
+    if (i < 0) continue;
+    if (part.slice(0, i).trim() === name) return decodeURIComponent(part.slice(i + 1).trim());
+  }
+  return null;
+}
+
+async function isAuthorized(request, env) {
+  const secretBytes = getSecretBytes(env);
+  if (!secretBytes) return false; // 未配置密钥 → 一律不通过（fail-closed）
+  const c = cookieValue(request, AUTH_COOKIE);
+  if (!c) return false;
+  return safeEqual(c, await sessionToken(secretBytes));
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+}
+
+function safeNext(v) {
+  const s = String(v == null ? '' : v);
+  if (!s.startsWith('/') || s.startsWith('//')) return '/'; // 防开放重定向
+  return s;
+}
+
+function isStaticAsset(p) {
+  return /\.(js|mjs|css|map|json|svg|png|jpe?g|gif|webp|ico|woff2?|ttf|txt|webmanifest)$/i.test(p);
+}
+
+// —— 登录页（内联，无外部依赖）——
+function loginPage(errMsg, next) {
+  const err = errMsg ? `<p class="err">${escapeHtml(errMsg)}</p>` : '<p class="tip">请输入验证器 App 上的 6 位动态口令</p>';
+  const html = `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>GiveMeOC · 访问验证</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center;
+         font-family: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+         background:#f5f6f8; color:#1f2328; }
+  @media (prefers-color-scheme: dark) { body { background:#15181d; color:#e6e8eb; } }
+  .card { width: min(340px, calc(100vw - 40px)); padding: 32px 28px; border-radius: 14px;
+          background:#fff; box-shadow: 0 8px 28px rgba(0,0,0,.10); text-align:center; }
+  @media (prefers-color-scheme: dark) { .card { background:#1e2229; box-shadow: 0 8px 28px rgba(0,0,0,.45); } }
+  h1 { margin:0 0 6px; font-size: 20px; letter-spacing:.5px; }
+  .tip { margin:0 0 18px; font-size:13px; color:#6b7280; }
+  .err { margin:0 0 18px; font-size:13px; color:#d92d20; }
+  input { width:100%; box-sizing:border-box; padding:12px 14px; font-size:22px; letter-spacing:10px;
+          text-align:center; border:1px solid #d0d5dd; border-radius:10px; background:transparent;
+          color:inherit; outline:none; font-variant-numeric: tabular-nums; }
+  input:focus { border-color:#3b82f6; box-shadow:0 0 0 3px rgba(59,130,246,.18); }
+  button { margin-top:16px; width:100%; padding:11px; font-size:15px; border:0; border-radius:10px;
+           background:#1f6feb; color:#fff; cursor:pointer; }
+  button:hover { background:#1a5fd0; }
+</style>
+</head>
+<body>
+  <form class="card" method="post" action="/api/login">
+    <h1>GiveMeOC</h1>
+    ${err}
+    <input type="text" name="code" inputmode="numeric" pattern="[0-9]*" maxlength="6"
+           autocomplete="one-time-code" autofocus required placeholder="000000" aria-label="6 位动态口令">
+    <input type="hidden" name="next" value="${escapeHtml(safeNext(next))}">
+    <button type="submit">验 证</button>
+  </form>
+</body>
+</html>`;
+  return new Response(html, {
+    status: errMsg ? 401 : 200,
+    headers: { 'Content-Type': 'text/html; charset=UTF-8', 'Cache-Control': 'no-store' },
+  });
+}
+
+// —— 登录：校验 TOTP → 下发会话 Cookie ——
+async function handleLogin(request, env) {
+  const secretBytes = getSecretBytes(env);
+  if (!secretBytes) return json({ error: '服务端未配置 TOTP_SECRET 函数变量' }, 500);
+
+  let code = '';
+  let next = '/';
+  const ct = (request.headers.get('Content-Type') || '').toLowerCase();
+  if (request.method === 'POST') {
+    if (ct.includes('application/json')) {
+      try {
+        const b = await request.json();
+        code = String(b.code == null ? b.password == null ? '' : b.password : b.code);
+        next = safeNext(b.next);
+      } catch { code = ''; }
+    } else {
+      try {
+        const form = await request.formData();
+        code = String(form.get('code') || '');
+        next = safeNext(form.get('next'));
+      } catch { code = ''; }
+    }
+  } else {
+    const u = new URL(request.url);
+    code = u.searchParams.get('code') || '';
+    next = safeNext(u.searchParams.get('next'));
+    if (!code) return loginPage('', next);
+  }
+
+  if (!(await verifyTotp(secretBytes, code))) {
+    return loginPage('口令错误或已失效，请重新输入验证器上的 6 位数字', next);
+  }
+
+  // 防重放：同一个动态口令 90 秒内只能成功一次
+  const guardKey = `otp-${code}`;
+  const usedAt = Number(await kvGetText(guardKey)) || 0;
+  if (usedAt && Date.now() - usedAt < OTP_REPLAY_GUARD_MS) {
+    return loginPage('该口令已使用过，请等待验证器刷新后重试', next);
+  }
+  await kvPut(guardKey, String(Date.now()));
+
+  const token = await sessionToken(secretBytes);
+  return new Response(null, {
+    status: 303,
+    headers: {
+      Location: next,
+      'Set-Cookie': `${AUTH_COOKIE}=${token}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${AUTH_MAX_AGE}`,
+      'Cache-Control': 'no-store',
+    },
+  });
+}
+
+function handleLogout() {
+  return new Response(null, {
+    status: 303,
+    headers: {
+      Location: '/',
+      'Set-Cookie': `${AUTH_COOKIE}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0`,
+      'Cache-Control': 'no-store',
+    },
+  });
+}
+
 export default {
-  async fetch(request) {
+  async fetch(request, context, env) {
     const url = new URL(request.url);
     const p = url.pathname;
-    // 静态资源与 favicon 原样放行
-    if (!p.startsWith('/api/')) return fetch(request);
+
+    // 登录/登出入口始终可达，否则配错密钥就无法自救
+    if (p === '/api/login') return await handleLogin(request, env);
+    if (p === '/api/logout') return handleLogout();
+
+    // 管理端点：靠 SYNC_KEY 独立鉴权，不依赖会话（便于命令行预热/重建）
+    if (p === '/api/sync') {
+      try {
+        return await handleSync(url);
+      } catch (err) {
+        return json({ error: '同步失败', detail: err.message }, 502);
+      }
+    }
+
+    // 未配置密钥 → 一律拒绝（fail-closed），杜绝"没配变量 = 没有门禁"
+    if (!getSecretBytes(env)) {
+      return json({ error: '服务端未配置 TOTP_SECRET 函数变量，站点已拒绝访问' }, 500);
+    }
+
+    // 鉴权闸门：数据出口(/api/*)一律拒，页面入口返回登录页，静态资源放行
+    if (!(await isAuthorized(request, env))) {
+      if (p.startsWith('/api/')) return json({ error: 'unauthorized' }, 401);
+      if (!isStaticAsset(p)) return loginPage('', safeNext(p + (url.search || '')));
+      return fetch(request);
+    }
+
     try {
-      if (p === '/api/sync') return await handleSync(url);
-      if (p === '/api/recruitment/postings') return await handlePostings(url);
-      if (p === '/api/recruitment/filter-options') return await handleFilterOptions(url);
-      // 其余 /api/* 保持透传兜底
-      const resp = await fetch(`${UPSTREAM}${p}${url.search}`, { headers: UPSTREAM_HEADERS });
-      const text = await resp.text();
-      return new Response(text, {
-        status: resp.status,
-        headers: {
-          'Content-Type': 'application/json;charset=UTF-8',
-          'Access-Control-Allow-Origin': '*',
-          'Cache-Control': 'no-store',
-        },
-      });
+      if (p.startsWith('/api/')) {
+        if (p === '/api/recruitment/postings') return await handlePostings(url);
+        if (p === '/api/recruitment/filter-options') return await handleFilterOptions(url);
+        // 其余 /api/* 保持透传兜底
+        const resp = await fetch(`${UPSTREAM}${p}${url.search}`, { headers: UPSTREAM_HEADERS });
+        const text = await resp.text();
+        return new Response(text, {
+          status: resp.status,
+          headers: {
+            'Content-Type': 'application/json;charset=UTF-8',
+            'Access-Control-Allow-Origin': '*',
+            'Cache-Control': 'no-store',
+          },
+        });
+      }
+      return fetch(request); // 已授权：页面与静态资源
     } catch (err) {
       return json({ error: '网关错误', detail: err.message }, 502);
     }

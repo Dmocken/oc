@@ -1,6 +1,16 @@
 const API_PREFIX = '/api';
 
 /**
+ * 会话失效（边缘函数返回 401）时重载页面，由边缘函数下发登录页。
+ * 数据出口在服务端强制鉴权，前端只负责把用户送回登录入口。
+ */
+function handleUnauthorized() {
+  if (typeof window !== 'undefined' && typeof window.location?.reload === 'function') {
+    window.location.reload();
+  }
+}
+
+/**
  * filter-options 拉取失败时兜底的招聘类型全集（2026/2027 两季并集），
  * 用于「不限招聘类型」时向服务端传全集以解锁深翻页，同时保证不丢数据。
  */
@@ -43,6 +53,7 @@ export function mapPosting(item) {
  */
 export async function fetchFilterOptions(seasonYear) {
   const resp = await fetch(`${API_PREFIX}/recruitment/filter-options?seasonYear=${encodeURIComponent(seasonYear)}`);
+  if (resp.status === 401) handleUnauthorized(); // 会话失效 → 回到登录页
   if (!resp.ok) {
     const error = new Error(`筛选选项请求失败: ${resp.status} ${resp.statusText}`);
     error.status = resp.status;
@@ -96,6 +107,7 @@ export async function fetchCompanies({
   if (recruitTypes.length) qs.set('recruitType', recruitTypes.join(','));
 
   const resp = await fetch(`${API_PREFIX}/recruitment/postings?${qs.toString()}`);
+  if (resp.status === 401) handleUnauthorized(); // 会话失效 → 回到登录页
   if (!resp.ok) {
     const error = new Error(`请求失败: ${resp.status} ${resp.statusText}`);
     error.status = resp.status;

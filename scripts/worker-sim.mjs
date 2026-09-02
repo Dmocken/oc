@@ -3,6 +3,44 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { createHmac, webcrypto } from 'node:crypto';
+
+// —— 测试用参考实现：先用 RFC 6238 官方向量自检，再用它给 worker 喂正确口令 ——
+const TEST_SECRET = 'JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP'; // 32 字符 Base32 = 20 字节
+const ENV = { TOTP_SECRET: TEST_SECRET };
+const B32T = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+
+function b32decode(s) {
+  let bits = 0, value = 0;
+  const out = [];
+  for (const ch of String(s).toUpperCase().replace(/[=\s-]/g, '')) {
+    const idx = B32T.indexOf(ch);
+    if (idx < 0) throw new Error('bad base32');
+    value = (value << 5) | idx;
+    bits += 5;
+    if (bits >= 8) { out.push((value >>> (bits - 8)) & 0xff); bits -= 8; }
+  }
+  return Uint8Array.from(out);
+}
+function ctrBytes(counter) {
+  const b = Buffer.alloc(8);
+  let c = counter;
+  for (let i = 7; i >= 0; i--) { b[i] = c & 0xff; c = Math.floor(c / 256); }
+  return b;
+}
+function refHotp8(bytes, counter) {
+  const mac = createHmac('sha1', Buffer.from(bytes)).update(ctrBytes(counter)).digest();
+  const off = mac[mac.length - 1] & 0x0f;
+  const bin = ((mac[off] & 0x7f) << 24) | (mac[off + 1] << 16) | (mac[off + 2] << 8) | mac[off + 3];
+  return String(bin % 1e8).padStart(8, '0');
+}
+function refCode(secret, atSec = Math.floor(Date.now() / 1000)) {
+  return refHotp8(b32decode(secret), Math.floor(atSec / 30)).slice(-6);
+}
+function refSession(secret) {
+  return createHmac('sha1', Buffer.from(b32decode(secret))).update('oc-session-v1').digest('hex');
+}
+const AUTH_COOKIE = `oc_auth=${refSession(TEST_SECRET)}`;
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 let src = readFileSync(join(root, 'edge-function', 'api-proxy.js'), 'utf8');
@@ -25,7 +63,8 @@ function makeEdgeKvClass(store) {
 }
 function makeUpstream(dataset, calls) {
   return async function fetchLike(url) {
-    const u = String(url);
+    // 平台允许 fetch(request) 传入 Request 对象（静态资源回源路径），此处统一取 URL
+    const u = typeof url === 'string' ? url : url && url.url ? url.url : String(url);
     calls.push(u);
     const pu = new URL(u);
     const body = (o, status = 200) => new Response(JSON.stringify(o), { status });
@@ -41,7 +80,8 @@ function makeUpstream(dataset, calls) {
       const totalItems = list.length;
       return body({ success: true, code: 0, message: 'success', data: { items: list.slice(page * size, (page + 1) * size), page, size, totalItems, totalPages: Math.max(1, Math.ceil(totalItems / size)), previewLimited: false } });
     }
-    throw new Error('mock 未覆盖的上游路径 ' + u);
+    // 非 offerbiu 的请求视为 Pages 静态资源回源
+    return new Response('static-asset', { status: 200 });
   };
 }
 
@@ -87,8 +127,8 @@ function buildDataset(n) {
 function buildWorker(dataset, store) {
   const calls = [];
   const EdgeKvClass = makeEdgeKvClass(store);
-  const fn = new Function('EdgeKV', 'fetch', src + '\nreturn __esModule;');
-  const mod = fn(EdgeKvClass, makeUpstream(dataset, calls));
+  const fn = new Function('EdgeKV', 'fetch', 'crypto', src + '\nreturn __esModule;');
+  const mod = fn(EdgeKvClass, makeUpstream(dataset, calls), webcrypto);
   return { worker: mod, calls };
 }
 
@@ -99,11 +139,26 @@ function check(name, cond, extra) {
   if (cond) { passed++; console.log(`PASS  ${name}`); }
   else { failed++; console.log(`FAIL  ${name}`, extra === undefined ? '' : extra); }
 }
-async function req(worker, path) {
-  const resp = await worker.fetch(new Request(H + path));
+async function req(worker, path, opts = {}) {
+  const headers = { ...(opts.headers || {}) };
+  if (!opts.noAuth) headers.Cookie = headers.Cookie || AUTH_COOKIE; // 默认携带有效会话
+  const init = { method: opts.method || 'GET', headers };
+  if (opts.body) {
+    init.body = opts.body;
+    init.headers['Content-Type'] = init.headers['Content-Type'] || 'application/x-www-form-urlencoded';
+  }
+  const resp = await worker.fetch(new Request(H + path, init), {}, opts.env === undefined ? ENV : opts.env);
+  const text = await resp.text();
   let body = null;
-  try { body = await resp.json(); } catch { body = null; }
-  return { status: resp.status, cache: resp.headers.get('X-Cache'), body };
+  try { body = JSON.parse(text); } catch { body = null; }
+  return {
+    status: resp.status,
+    cache: resp.headers.get('X-Cache'),
+    setCookie: resp.headers.get('Set-Cookie'),
+    location: resp.headers.get('Location'),
+    text,
+    body,
+  };
 }
 
 // ===== 场景 A：冷启动 → 直连透传 =====
@@ -226,6 +281,73 @@ async function req(worker, path) {
   await req(worker, '/api/sync?season=2027&key=oc-sync-2026a9f3c7e2&from=0&to=0'); // 只写了 stage，未 final
   const r = await req(worker, '/api/recruitment/postings?seasonYear=2027&page=0&size=20');
   check('G1 未 final 前 postings 仍 UPSTREAM', r.cache === 'UPSTREAM', r.cache);
+}
+
+// ===== 场景 H：TOTP 访问鉴权 =====
+{
+  // H0 参考实现自检：RFC 6238 官方测试向量（SHA-1 / 8 位 / 30s）
+  const vecSecret = Buffer.from('12345678901234567890', 'ascii');
+  const vectors = [
+    [59, '94287082'], [1111111109, '07081804'], [1111111111, '14050471'],
+    [1234567890, '89005924'], [2000000000, '69279037'],
+  ];
+  for (const [t, expect] of vectors) {
+    const got = refHotp8(vecSecret, Math.floor(t / 30));
+    check(`H0 T=${t} 向量=${expect}`, got === expect, got);
+  }
+
+  const dataset = buildDataset(80);
+  const store = makeStore();
+  const { worker } = buildWorker(dataset, store);
+  await req(worker, '/api/sync?season=2027&key=oc-sync-2026a9f3c7e2&from=0&to=0');
+  await req(worker, '/api/sync?season=2027&key=oc-sync-2026a9f3c7e2&final=1');
+
+  // H1 未登录访问页面 → 登录页
+  const p1 = await req(worker, '/', { noAuth: true });
+  check('H1 未登录访问页面 → 登录页', p1.status === 200 && p1.text.includes('<form') && p1.text.includes('GiveMeOC'), p1.status);
+
+  // H2 未登录访问数据 API → 401
+  const a1 = await req(worker, '/api/recruitment/postings?seasonYear=2027&page=0&size=20', { noAuth: true });
+  check('H2 未登录访问数据 API → 401', a1.status === 401 && a1.body.error === 'unauthorized', a1.status);
+
+  // H3 未配置密钥 → 拒绝一切（fail-closed）
+  const noEnv = await req(worker, '/', { noAuth: true, env: {} });
+  const noEnvApi = await req(worker, '/api/recruitment/postings?seasonYear=2027', { noAuth: true, env: {} });
+  check('H3 未配置 TOTP_SECRET → 页面也拒绝', noEnv.status === 500, noEnv.status);
+  check('H3b 未配置密钥时 API 同样拒绝', noEnvApi.status === 500, noEnvApi.status);
+
+  // H4 错误口令
+  const bad = await req(worker, '/api/login', { noAuth: true, method: 'POST', body: 'code=000000&next=/' });
+  check('H4 错误口令 → 401', bad.status === 401, bad.status);
+  check('H4b 错误口令不下发 Cookie', !bad.setCookie, bad.setCookie);
+
+  // H5 正确口令（由已自检的参考实现生成）
+  const code = refCode(TEST_SECRET);
+  const ok = await req(worker, '/api/login', { noAuth: true, method: 'POST', body: `code=${code}&next=/` });
+  check('H5 正确口令 → 303 跳转', ok.status === 303, ok.status);
+  check('H5b 下发 HttpOnly 会话 Cookie', !!ok.setCookie && ok.setCookie.includes('oc_auth=') && ok.setCookie.includes('HttpOnly'), ok.setCookie);
+
+  // H6 携带会话访问数据
+  const hit = await req(worker, '/api/recruitment/postings?seasonYear=2027&page=0&size=20', { headers: { Cookie: AUTH_COOKIE } });
+  check('H6 带会话可访问数据(80 条)', hit.status === 200 && hit.body.data.totalItems === 80, hit.status);
+
+  // H7 伪造 Cookie
+  const fake = await req(worker, '/api/recruitment/postings?seasonYear=2027&page=0&size=20', { headers: { Cookie: 'oc_auth=deadbeef' } });
+  check('H7 伪造 Cookie → 401', fake.status === 401, fake.status);
+
+  // H8 防重放
+  const replay = await req(worker, '/api/login', { noAuth: true, method: 'POST', body: `code=${code}&next=/` });
+  check('H8 同一口令重放被拒', replay.status === 401 && replay.text.includes('已使用过'), replay.status);
+
+  // H9 登出
+  const out = await req(worker, '/api/logout', { noAuth: true });
+  check('H9 登出清除 Cookie', out.status === 303 && !!out.setCookie && /Max-Age=0/.test(out.setCookie), out.setCookie);
+
+  // H10/H11 静态资源（登录页样式/图标）在未登录与已登录下均可用
+  const s1 = await req(worker, '/assets/index-abc.js', { noAuth: true });
+  check('H10 未登录可加载静态资源', s1.status === 200 && s1.text === 'static-asset', s1.status);
+  const s2 = await req(worker, '/assets/index-abc.js', { headers: { Cookie: AUTH_COOKIE } });
+  check('H11 已登录可加载静态资源', s2.status === 200 && s2.text === 'static-asset', s2.status);
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
