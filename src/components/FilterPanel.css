@@ -82,10 +82,58 @@
 
 .search-clear:hover { background: #cbd5e1; color: #334155; }
 
+/* 求职季切换 */
+.season-area {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.season-label {
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+
+.season-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid #e2e8f0;
+  border-radius: 11px;
+  background: #eef2f7;
+}
+
+.season-option {
+  border: 0;
+  border-radius: 8px;
+  padding: 7px 18px;
+  background: transparent;
+  color: #64748b;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background .15s, color .15s, box-shadow .15s;
+}
+
+.season-option:hover { color: #1e293b; background: #e2e8f0; }
+
+.season-option.active {
+  background: #fff;
+  color: #4f46e5;
+  box-shadow: 0 1px 5px rgba(15, 23, 42, .12);
+}
+
 /* Filter row */
 .filter-row {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 10px;
   padding-top: 16px;
   border-top: 1px solid #f1f5f9;
@@ -307,6 +355,11 @@
 @media (max-width: 1050px) {
   .filter-row { grid-template-columns: repeat(3, 1fr); }
   .filter-toolbar { align-items: stretch; flex-direction: column; }
+  .season-area { justify-content: flex-end; }
+}
+
+@media (max-width: 640px) {
+  .season-area { justify-content: flex-start; flex-wrap: wrap; }
 }
 
 @media (max-width: 560px) {

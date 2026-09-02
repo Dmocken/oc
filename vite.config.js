@@ -6,14 +6,9 @@ export default defineConfig({
   plugins: [react()],
   server: {
     proxy: {
+      // /api 原样转发到 offerbiu 后端，解决跨域
       '/api': {
-        target: 'https://www.givemeoc.com',
-        changeOrigin: true,
-        secure: true,
-        rewrite: (path) => path.replace(/^\/api/, '/wp-json/givemeoc/v1'),
-      },
-      '/wp-json': {
-        target: 'https://www.givemeoc.com',
+        target: 'https://www.offerbiu.com',
         changeOrigin: true,
         secure: true,
       },

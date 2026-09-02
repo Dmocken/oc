@@ -19,11 +19,6 @@ function getStatusColor(status) {
   return STATUS_COLORS[status] || '#9ca3af';
 }
 
-function formatCompanySize(size) {
-  if (!size) return '-';
-  return String(size).replace(/\s*员工数量\s*/g, '').trim() || '-';
-}
-
 function formatArrayField(value) {
   if (!value) return '-';
   const arr = Array.isArray(value) ? value : [value];
@@ -211,7 +206,6 @@ export default function DataTable({
             <th>公司名称</th>
             <th>公司类型</th>
             <th>行业</th>
-            <th>规模</th>
             <th>招聘类型</th>
             <th>目标人群</th>
             <th>岗位</th>
@@ -222,50 +216,54 @@ export default function DataTable({
           </tr>
         </thead>
         <tbody>
-          {data.map((item) => (
-            <tr
-              key={item.id}
-              className="table-row"
-              onClick={() => onRowClick && onRowClick(item.id)}
-              onKeyDown={(event) => {
-                if ((event.key === 'Enter' || event.key === ' ') && onRowClick) onRowClick(item.id);
-              }}
-              tabIndex="0"
-            >
-              <td className="cell-name" data-label="公司名称">{item.name || '未命名公司'}</td>
-              <td data-label="公司类型">{item.type || '-'}</td>
-              <td data-label="行业">{item.industry || '-'}</td>
-              <td data-label="规模">{formatCompanySize(item.company_size)}</td>
-              <td data-label="招聘类型">
-                {item.recruitment_type ? (
-                  <span className="tag tag-recruitment">{item.recruitment_type}</span>
-                ) : (
-                  '-'
-                )}
-              </td>
-              <td data-label="目标人群">{item.target_candidates || '-'}</td>
-              <td className="cell-truncate" data-label="岗位" title={Array.isArray(item.positions) ? item.positions.join('、') : item.positions}>
-                {formatArrayField(item.positions)}
-              </td>
-              <td className="cell-truncate" data-label="地点" title={Array.isArray(item.locations) ? item.locations.join('、') : item.locations}>
-                {formatArrayField(item.locations)}
-              </td>
-              <td className="col-status">
-                <StatusCell
-                  companyId={item.id}
-                  originalStatus={item.progress_status}
-                  localOverrides={localOverrides}
-                  setLocalOverrides={setLocalOverrides}
-                />
-              </td>
-              <td className={`col-deadline ${item.deadline && !isNaN(new Date(item.deadline).getTime()) && new Date(item.deadline) < new Date() ? 'deadline-expired' : ''}`} data-label="截止日期">
-                {formatDate(item.deadline)}
-              </td>
-              <td className="col-updated" data-label="更新时间">
-                {formatDateTime(item.update_time)}
-              </td>
-            </tr>
-          ))}
+          {data.map((item) => {
+            const deadlineDate = item.deadline ? new Date(item.deadline) : null;
+            const deadlineExpired =
+              deadlineDate && !isNaN(deadlineDate.getTime()) && deadlineDate < new Date();
+            return (
+              <tr
+                key={item.id}
+                className="table-row"
+                onClick={() => onRowClick && onRowClick(item)}
+                onKeyDown={(event) => {
+                  if ((event.key === 'Enter' || event.key === ' ') && onRowClick) onRowClick(item);
+                }}
+                tabIndex="0"
+              >
+                <td className="cell-name" data-label="公司名称">{item.name || '未命名公司'}</td>
+                <td data-label="公司类型">{item.type || '-'}</td>
+                <td data-label="行业">{item.industry || '-'}</td>
+                <td data-label="招聘类型">
+                  {item.recruitment_type ? (
+                    <span className="tag tag-recruitment">{item.recruitment_type}</span>
+                  ) : (
+                    '-'
+                  )}
+                </td>
+                <td data-label="目标人群">{item.target_candidates || '-'}</td>
+                <td className="cell-truncate" data-label="岗位" title={item.positions || undefined}>
+                  {item.positions || '-'}
+                </td>
+                <td className="cell-truncate" data-label="地点" title={Array.isArray(item.locations) ? item.locations.join('、') : undefined}>
+                  {formatArrayField(item.locations)}
+                </td>
+                <td className="col-status">
+                  <StatusCell
+                    companyId={item.id}
+                    originalStatus={item.progress_status}
+                    localOverrides={localOverrides}
+                    setLocalOverrides={setLocalOverrides}
+                  />
+                </td>
+                <td className={`col-deadline ${deadlineExpired ? 'deadline-expired' : ''}`} data-label="截止日期" title={deadlineDate && !isNaN(deadlineDate.getTime()) ? formatDate(item.deadline) : undefined}>
+                  {item.deadline_text || formatDate(item.deadline)}
+                </td>
+                <td className="col-updated" data-label="更新时间">
+                  {formatDateTime(item.update_time)}
+                </td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
       </div>

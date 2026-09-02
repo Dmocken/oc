@@ -1,23 +1,54 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
+import { FALLBACK_RECRUIT_TYPES } from '../api';
 import './FilterPanel.css';
 
-const COMPANY_TYPES     = ['', '央国企', '外企', '民企', '事业单位', '银行', '中外合资'];
-const RECRUITMENT_TYPES = ['', '春招', '秋招', '秋招补录', '秋招提前批', '实习', '春招补录'];
 const PROGRESS_STATUSES = ['', '未投递', '已投递', '笔试中', '面试中', '已发offer', '已拒', '已过期'];
-const TARGET_CANDIDATES = ['', '2026届', '2025届', '2024届', '2027届', '不限'];
-const PER_PAGE_OPTIONS   = [20, 50, 100];
+const PER_PAGE_OPTIONS = [20, 50, 100];
+const SEASON_OPTIONS = [
+  { value: '2027', label: '2027届' },
+  { value: '2026', label: '2026届' },
+];
 
-export default function FilterPanel({ filters, onFilterChange, onSearch, loading }) {
+export default function FilterPanel({
+  filters,
+  onFilterChange,
+  onSearch,
+  loading,
+  filterOptions,
+  companyTypeOptions,
+}) {
   const [localSearch, setLocalSearch] = useState(filters.search || '');
 
   useEffect(() => setLocalSearch(filters.search || ''), [filters.search]);
 
+  const recruitTypes =
+    filterOptions?.recruitTypes?.length
+      ? filterOptions.recruitTypes
+      : FALLBACK_RECRUIT_TYPES;
+
+  const targetYears =
+    filterOptions?.targetYears?.length
+      ? [...filterOptions.targetYears].sort((a, b) => b - a)
+      : [];
+
   const handleSingle = (key, value) => onFilterChange({ ...filters, [key]: value, page: 1 });
-  const handleMulti  = (key, value) => {
-    // value is the new array; if it includes '' (全部), clear to []
+  const handleMulti = (key, value) => {
+    // value 是新数组；若包含 ''（全部），清空为 []
     const cleaned = value.includes('') ? [] : value;
     onFilterChange({ ...filters, [key]: cleaned, page: 1 });
+  };
+
+  const handleSeason = (value) => {
+    if (String(value) === String(filters.season_year)) return;
+    // 切换求职季后，届别相关的筛选重置为不限
+    onFilterChange({
+      ...filters,
+      season_year: value,
+      recruitment_type: [],
+      target_year: '',
+      page: 1,
+    });
   };
 
   return (
@@ -31,29 +62,45 @@ export default function FilterPanel({ filters, onFilterChange, onSearch, loading
             <input
               type="search"
               className="search-input"
-              placeholder="搜索公司名称、行业或备注..."
+              placeholder="搜索公司名称或岗位..."
               value={localSearch}
               onChange={(e) => setLocalSearch(e.target.value)}
-              aria-label="搜索公司名称、行业或备注"
+              aria-label="搜索公司名称或岗位"
             />
             {localSearch && <button type="button" className="search-clear" onClick={() => setLocalSearch('')} aria-label="清除关键词">×</button>}
           </label>
           <button type="submit" className="btn btn-primary" disabled={loading}>{loading ? '加载中...' : '搜索'}</button>
         </form>
+
+        <div className="season-area">
+          <span className="season-label">求职季</span>
+          <div className="season-switch" role="group" aria-label="选择求职季">
+            {SEASON_OPTIONS.map((opt) => (
+              <button
+                key={opt.value}
+                type="button"
+                className={`season-option ${String(filters.season_year) === opt.value ? 'active' : ''}`}
+                onClick={() => handleSeason(opt.value)}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+        </div>
       </div>
 
       <div className="filter-row">
-        <FilterSelect multi label="公司类型" value={filters.company_type} onChange={(v) => handleMulti('company_type', v)} options={COMPANY_TYPES} empty="全部类型" />
-        <FilterSelect multi label="招聘类型" value={filters.recruitment_type} onChange={(v) => handleMulti('recruitment_type', v)} options={RECRUITMENT_TYPES} empty="全部招聘类型" />
-        <FilterSelect multi label="投递状态" value={filters.progress_status} onChange={(v) => handleMulti('progress_status', v)} options={PROGRESS_STATUSES} empty="全部状态" />
-        <FilterSelect multi label="目标人群" value={filters.target_candidates} onChange={(v) => handleMulti('target_candidates', v)} options={TARGET_CANDIDATES} empty="全部人群" />
+        <FilterSelect multi label="公司类型" value={filters.company_type} onChange={(v) => handleMulti('company_type', v)} options={companyTypeOptions} empty="全部类型" />
+        <FilterSelect multi label="招聘类型" value={filters.recruitment_type} onChange={(v) => handleMulti('recruitment_type', v)} options={recruitTypes} empty="全部类型" />
         <FilterSelect
-          label="排序方式"
-          value={`${filters.order_by || 'update_time'}:${filters.order || 'desc'}`}
-          onChange={(v) => { const [order_by, order] = v.split(':'); onFilterChange({ ...filters, order_by, order, page: 1 }); }}
-          options={['update_time:desc', 'update_time:asc', 'deadline:asc', 'name:asc']}
-          optionLabels={['最近更新', '最早更新', '截止日期优先', '公司名称 A-Z']}
+          label="目标届别"
+          value={filters.target_year || ''}
+          onChange={(v) => handleSingle('target_year', v)}
+          options={['', ...targetYears.map(String)]}
+          optionLabels={['全部届别', ...targetYears.map((y) => `${y}届`)]}
+          empty="全部届别"
         />
+        <FilterSelect multi label="投递状态" value={filters.progress_status} onChange={(v) => handleMulti('progress_status', v)} options={PROGRESS_STATUSES} empty="全部状态" />
         <FilterSelect
           label="每页数量"
           value={String(filters.per_page || 20)}

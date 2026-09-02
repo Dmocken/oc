@@ -1,33 +1,43 @@
-import { useState, useEffect } from 'react';
-import { fetchCompanyDetail } from '../api';
+import { useEffect, useState } from 'react';
 import './DetailModal.css';
 
-export default function DetailModal({ companyId, onClose }) {
-  const [detail, setDetail] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
+function fmtDate(dateStr) {
+  if (!dateStr) return '-';
+  const d = new Date(dateStr);
+  if (Number.isNaN(d.getTime())) return String(dateStr);
+  return d.toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' });
+}
+
+function fmtDateTime(dateStr) {
+  if (!dateStr) return '-';
+  const d = new Date(dateStr);
+  if (Number.isNaN(d.getTime())) return String(dateStr);
+  return d.toLocaleString('zh-CN', {
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hour12: false,
+  });
+}
+
+function joinArr(value) {
+  if (value === null || value === undefined || value === '') return '';
+  return Array.isArray(value) ? value.join('、') : String(value);
+}
+
+/**
+ * 招聘记录详情弹窗：直接展示列表行携带的 offerbiu 数据，无需额外请求。
+ */
+export default function DetailModal({ row, onClose }) {
   const [copied, setCopied] = useState(false);
+  const r = row || {};
+  const item = r.raw || r; // offerbiu 原始条目（若无则退化为归一化行）
 
-  useEffect(() => {
-    if (!companyId) return;
-    let cancelled = false;
-
-    const load = async () => {
-      setLoading(true);
-      setError(null);
-      try {
-        const data = await fetchCompanyDetail(companyId);
-        if (!cancelled) setDetail(data);
-      } catch (err) {
-        if (!cancelled) setError(err.message);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    };
-
-    load();
-    return () => { cancelled = true; };
-  }, [companyId]);
+  const targetYears = item.targetYears || item.target_candidates;
+  const deadline =
+    item.deadline_text ||
+    (item.deadlineAt ? fmtDate(item.deadlineAt) : item.deadline ? fmtDate(item.deadline) : '-');
+  const updatedAt = item.sourceUpdatedAt || item.updatedAt || item.update_time || null;
+  const applyUrl = r.apply_url || item.applyUrl || '';
+  const announcementUrl = item.announcementUrl || '';
 
   useEffect(() => {
     const handleKeyDown = (event) => { if (event.key === 'Escape') onClose(); };
@@ -37,10 +47,10 @@ export default function DetailModal({ companyId, onClose }) {
     return () => { document.removeEventListener('keydown', handleKeyDown); document.body.style.overflow = previousOverflow; };
   }, [onClose]);
 
-  const copyReferral = async () => {
-    if (!detail?.referral_code) return;
+  const copyText = async (text) => {
+    if (!text) return;
     try {
-      await navigator.clipboard.writeText(detail.referral_code);
+      await navigator.clipboard.writeText(text);
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1600);
     } catch {
@@ -52,42 +62,15 @@ export default function DetailModal({ companyId, onClose }) {
     if (e.target === e.currentTarget) onClose();
   };
 
-  const renderLinks = (links) => {
-    if (!links) return null;
-    let parsed = links;
-    if (typeof links === 'string') {
-      try { parsed = JSON.parse(links); } catch { parsed = links; }
+  const renderLinks = () => {
+    const links = [];
+    if (applyUrl) {
+      links.push({ label: '投递申请', url: applyUrl, text: item.applyText || '' });
     }
-    if (typeof parsed === 'string') {
-      // 尝试从文本中提取 URL
-      const urlRegex = /https?:\/\/[^\s,，]+/g;
-      const urls = parsed.match(urlRegex);
-      if (urls) {
-        return urls.map((url, i) => (
-          <a key={i} href={url} target="_blank" rel="noopener noreferrer" className="detail-link">
-            {url}
-          </a>
-        ));
-      }
-      return <span>{parsed}</span>;
+    if (announcementUrl) {
+      links.push({ label: '招聘公告', url: announcementUrl });
     }
-    if (Array.isArray(parsed)) {
-      return parsed.map((item, i) => (
-        <div key={i}>
-          {typeof item === 'string' ? (
-            <a href={item} target="_blank" rel="noopener noreferrer" className="detail-link">
-              {item}
-            </a>
-          ) : (
-            <pre className="detail-json">{JSON.stringify(item, null, 2)}</pre>
-          )}
-        </div>
-      ));
-    }
-    if (typeof parsed === 'object') {
-      return <pre className="detail-json">{JSON.stringify(parsed, null, 2)}</pre>;
-    }
-    return <span>{String(links)}</span>;
+    return links;
   };
 
   return (
@@ -97,137 +80,98 @@ export default function DetailModal({ companyId, onClose }) {
           &times;
         </button>
 
-        {loading && (
-          <div className="modal-loading">
-            <div className="spinner" />
-            <p>加载详情中...</p>
+        <div className="modal-header">
+          <div>
+            <span className="modal-kicker">
+              {item.seasonYear ? `${item.seasonYear}届招聘` : 'RECRUITMENT'}
+              {item.visibilityTier === 'VIP' && <span className="vip-pill">VIP</span>}
+            </span>
+            <h2 id="detail-title">{r.name || item.companyName || '未命名公司'}</h2>
           </div>
-        )}
+          <span className="detail-id">ID: {item.id || r.id}</span>
+        </div>
 
-        {error && (
-          <div className="modal-error">
-            <p>加载失败: {error}</p>
-            <button className="btn btn-primary" onClick={onClose}>关闭</button>
-          </div>
-        )}
-
-        {detail && !loading && !error && (
-          <>
-            <div className="modal-header">
-              <div><span className="modal-kicker">COMPANY DETAIL</span><h2 id="detail-title">{detail.name}</h2></div>
-              <span className="detail-id">ID: {detail.id}</span>
+        <div className="modal-body">
+          <section className="detail-section">
+            <h3>基本信息</h3>
+            <div className="detail-grid">
+              <div className="detail-item">
+                <span className="detail-label">公司类型</span>
+                <span className="detail-value">{item.companyNature || r.type || '-'}</span>
+              </div>
+              <div className="detail-item">
+                <span className="detail-label">行业</span>
+                <span className="detail-value">{item.industry || r.industry || '-'}</span>
+              </div>
+              <div className="detail-item">
+                <span className="detail-label">招聘类型</span>
+                <span className="detail-value">{item.recruitType || r.recruitment_type || '-'}</span>
+              </div>
+              <div className="detail-item">
+                <span className="detail-label">目标届别</span>
+                <span className="detail-value">
+                  {Array.isArray(targetYears)
+                    ? targetYears.map((y) => `${y}届`).join('、')
+                    : targetYears || '-'}
+                </span>
+              </div>
+              <div className="detail-item">
+                <span className="detail-label">笔试政策</span>
+                <span className="detail-value">{item.examPolicy || '-'}</span>
+              </div>
+              <div className="detail-item">
+                <span className="detail-label">截止时间</span>
+                <span className="detail-value">{deadline}</span>
+              </div>
+              <div className="detail-item">
+                <span className="detail-label">更新时间</span>
+                <span className="detail-value">{updatedAt ? fmtDateTime(updatedAt) : '-'}</span>
+              </div>
             </div>
+          </section>
 
-            <div className="modal-body">
-              <section className="detail-section">
-                <h3>基本信息</h3>
-                <div className="detail-grid">
-                  <div className="detail-item">
-                    <span className="detail-label">公司类型</span>
-                    <span className="detail-value">{detail.type || '-'}</span>
-                  </div>
-                  <div className="detail-item">
-                    <span className="detail-label">行业</span>
-                    <span className="detail-value">{detail.industry || '-'}</span>
-                  </div>
-                  <div className="detail-item">
-                    <span className="detail-label">公司规模</span>
-                    <span className="detail-value">{detail.company_size || '-'}</span>
-                  </div>
-                  <div className="detail-item">
-                    <span className="detail-label">招聘类型</span>
-                    <span className="detail-value">{detail.recruitment_type || '-'}</span>
-                  </div>
-                  <div className="detail-item">
-                    <span className="detail-label">目标人群</span>
-                    <span className="detail-value">{detail.target_candidates || '-'}</span>
-                  </div>
-                  <div className="detail-item">
-                    <span className="detail-label">投递状态</span>
-                    <span className="detail-value">{detail.progress_status || '-'}</span>
-                  </div>
-                  <div className="detail-item">
-                    <span className="detail-label">截止日期</span>
-                    <span className="detail-value">
-                      {detail.deadline ? new Date(detail.deadline).toLocaleDateString('zh-CN') : '-'}
-                    </span>
-                  </div>
-                  <div className="detail-item">
-                    <span className="detail-label">更新时间</span>
-                    <span className="detail-value">
-                      {detail.update_time ? new Date(detail.update_time).toLocaleString('zh-CN') : '-'}
-                    </span>
-                  </div>
-                </div>
-              </section>
-
-              <section className="detail-section">
-                <h3>岗位信息</h3>
-                <div className="detail-grid">
-                  <div className="detail-item full-width">
-                    <span className="detail-label">岗位</span>
-                    <span className="detail-value">
-                      {Array.isArray(detail.positions)
-                        ? detail.positions.join('、')
-                        : (detail.positions || '-')}
-                    </span>
-                  </div>
-                  <div className="detail-item full-width">
-                    <span className="detail-label">地点</span>
-                    <span className="detail-value">
-                      {Array.isArray(detail.locations)
-                        ? detail.locations.join('、')
-                        : (detail.locations || '-')}
-                    </span>
-                  </div>
-                </div>
-              </section>
-
-              {(detail.related_links || detail.recruitment_notice) && (
-                <section className="detail-section">
-                  <h3>相关链接</h3>
-                  {detail.related_links && (
-                    <div className="detail-item">
-                      <span className="detail-label">投递链接</span>
-                      <div className="detail-value">{renderLinks(detail.related_links)}</div>
-                    </div>
-                  )}
-                  {detail.recruitment_notice && (
-                    <div className="detail-item">
-                      <span className="detail-label">招聘公告</span>
-                      <div className="detail-value">{renderLinks(detail.recruitment_notice)}</div>
-                    </div>
-                  )}
-                </section>
-              )}
-
-              {detail.referral_code && (
-                <section className="detail-section">
-                  <h3>推荐码</h3>
-                  <div className="referral-row"><code className="referral-code">{detail.referral_code}</code><button type="button" className="copy-button" onClick={copyReferral}>{copied ? '已复制' : '复制'}</button></div>
-                </section>
-              )}
-
-              {detail.exam_info && (
-                <section className="detail-section">
-                  <h3>笔试信息</h3>
-                  <div className="detail-value">
-                    {typeof detail.exam_info === 'string'
-                      ? detail.exam_info
-                      : renderLinks(detail.exam_info)}
-                  </div>
-                </section>
-              )}
-
-              {detail.notes && (
-                <section className="detail-section">
-                  <h3>备注</h3>
-                  <p className="detail-notes">{detail.notes}</p>
-                </section>
-              )}
+          <section className="detail-section">
+            <h3>岗位信息</h3>
+            <div className="detail-grid">
+              <div className="detail-item full-width">
+                <span className="detail-label">岗位</span>
+                <span className="detail-value">{joinArr(item.positionsText || r.positions) || '-'}</span>
+              </div>
+              <div className="detail-item full-width">
+                <span className="detail-label">工作地点</span>
+                <span className="detail-value">{joinArr(item.locations) || '-'}</span>
+              </div>
             </div>
-          </>
-        )}
+          </section>
+
+          {renderLinks().length > 0 && (
+            <section className="detail-section">
+              <h3>相关链接</h3>
+              <div className="detail-grid">
+                {renderLinks().map((link) => (
+                  <div key={link.label} className="detail-item">
+                    <span className="detail-label">{link.label}</span>
+                    <div className="detail-value link-value">
+                      <a href={link.url} target="_blank" rel="noopener noreferrer" className="detail-link">
+                        {link.text || link.url}
+                      </a>
+                      <button type="button" className="copy-button" onClick={() => copyText(link.url)}>
+                        {copied ? '已复制' : '复制链接'}
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {(item.noteText || item.note_text) && (
+            <section className="detail-section">
+              <h3>备注</h3>
+              <p className="detail-notes">{item.noteText || item.note_text}</p>
+            </section>
+          )}
+        </div>
       </div>
     </div>
   );
